@@ -2,23 +2,27 @@ pipeline {
     agent any
 
     environment {
-        CLIENT_ID = credentials('Clien_ID')
+        CLIENT_ID     = credentials('Clien_ID')
         CLIENT_SECRET = credentials('Client_Secret')
+        TEST_PLAN_KEY = 'POEI20252-531'
     }
 
     stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/crimson-king-5/KarateProject.git'
+            }
+        }
+
         stage('Generate Token') {
             steps {
-                writeFile file: 'token.txt', text: ''
                 script {
-                    def response = httpRequest customHeaders: [
-                        [name: 'Content-Type', value: 'application/json']
-                    ],
-                    httpMode: 'POST',
-                    requestBody: "{\"client_id\": \"${CLIENT_ID}\", \"client_secret\": \"${CLIENT_SECRET}\"}",
-                    url: 'https://xray.cloud.getxray.app/api/v2/authenticate'
-
-                    writeFile file: 'token.txt', text: response.content.replaceAll('"', '')
+                    bat """
+                        curl -X POST https://xray.cloud.getxray.app/api/v2/authenticate ^
+                        -H "Content-Type: application/json" ^
+                        -d "{\\"client_id\\": \\"%CLIENT_ID%\\", \\"client_secret\\": \\"%CLIENT_SECRET%\\"}" ^
+                        > token.txt
+                    """
                 }
             }
         }
@@ -26,26 +30,22 @@ pipeline {
         stage('Download Features from Xray') {
             steps {
                 script {
-                    def token = readFile('token.txt').trim()
-                    def download = httpRequest customHeaders: [
-                        [name: 'Authorization', value: "Bearer ${token}"]
-                    ],
-                    httpMode: 'GET',
-                    url: 'https://xray.cloud.getxray.app/api/v2/export/cucumber?keys=POEI20252-531'
-
-                    writeFile file: 'features.zip', text: download.content
-                    bat 'powershell Expand-Archive -Path features.zip -DestinationPath src\\test\\resources\\features\\imported -Force'
+                    bat """
+                        set /p TOKEN=<token.txt
+                        curl -X GET "https://xray.cloud.getxray.app/api/v2/export/cucumber?keys=%TEST_PLAN_KEY%" ^
+                        -H "Authorization: Bearer %TOKEN%" ^
+                        -o features.zip
+                        powershell Expand-Archive -Path features.zip -DestinationPath src\\test\\resources\\features\\imported -Force
+                    """
                 }
             }
         }
 
-       stage('Merge Features') {
-           steps {
-               bat '''
-                   type src\\test\\resources\\features\\imported\\*.feature > src\\test\\resources\\features\\merged.feature
-               '''
-           }
-       }
+        stage('Merge Features') {
+            steps {
+                bat 'type src\\test\\resources\\features\\imported\\*.feature > src\\test\\resources\\features\\merged.feature'
+            }
+        }
 
         stage('Run Tests') {
             steps {
@@ -53,17 +53,22 @@ pipeline {
             }
         }
 
+        stage('Merge JSON Reports') {
+            steps {
+                bat 'copy /b target\\cucumber*.json merged.json'
+            }
+        }
+
         stage('Send Results to Xray') {
             steps {
                 script {
-                    def token = readFile('token.txt').trim()
-                    httpRequest customHeaders: [
-                        [name: 'Authorization', value: "Bearer ${token}"],
-                        [name: 'Content-Type', value: "application/json"]
-                    ],
-                    httpMode: 'POST',
-                    requestBody: readFile('target/cucumber.json'),
-                    url: 'https://xray.cloud.getxray.app/api/v2/import/execution/cucumber'
+                    bat """
+                        set /p TOKEN=<token.txt
+                        curl -X POST https://xray.cloud.getxray.app/api/v2/import/execution/cucumber ^
+                        -H "Content-Type: application/json" ^
+                        -H "Authorization: Bearer %TOKEN%" ^
+                        --data-binary "@merged.json"
+                    """
                 }
             }
         }
